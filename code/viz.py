@@ -205,7 +205,7 @@ df['agent'] = df['agent'].str.strip().str.lower()
 df['agent_group'] = df['agent'].apply(normalize_agent)
 df = df[df['agent_group'].notna()]
 df = df[df['agent'].str.len() <= 50]
-print(df['agent_group'].value_counts())
+# print(df['agent_group'].value_counts())
 agg = df.groupby(['agent_group', 'apparatus']).size().reset_index(name='count')
 pivot_table = agg.pivot(index='agent_group', columns='apparatus', values='count').fillna(0)
 plotly_colors = px.colors.sequential.Blues[2:]

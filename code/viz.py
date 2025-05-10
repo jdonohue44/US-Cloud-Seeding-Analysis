@@ -1,11 +1,13 @@
 from collections import Counter
 import re
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.cm import get_cmap
 import seaborn as sns
 import plotly.express as px
+import plotly.colors as pc
 
 # Load Data
 df = pd.read_csv('../data/cloud_seeding_us_2000_2025.csv')
@@ -62,6 +64,45 @@ purpose_mapping = {
     "assist firefighting": ["assist firefighting"],
 }
 
+def normalize_agent(agent):
+    if not isinstance(agent, str):
+        return agent
+    agent = agent.lower().strip()
+
+    # Drop unwanted entries
+    if 'sea salt' in agent or 'liquid water' in agent or 'water droplets' in agent or 'condensation freezing seeding agent' in agent:
+        return None
+
+    # Normalize chemical shorthand
+    agent = agent.replace('ammonia', 'ammonium') 
+    agent = agent.replace('agi', 'silver iodide')
+    agent = agent.replace('nh4i', 'ammonium iodide')
+    agent = agent.replace('nh41', 'ammonium iodide')
+    agent = agent.replace('-', ' ')
+    agent = agent.replace('ammonia iodide', 'ammonium iodide') 
+    agent = agent.replace('silver iodide ammonium iodide', 'silver iodide, ammonium iodide')
+    agent = agent.replace('kcl', 'potassium chloride')
+
+    # Consolidate hygroscopic variations
+    if 'hygroscopic' in agent:
+        return 'silver iodide, hygroscopic'
+
+    # Consolidate other complex known mixes
+    if 'acetone' in agent:
+        return 'silver iodide, acetone'
+    if 'dry ice' in agent or 'carbon dioxide' in agent:
+        return 'silver iodide, dry ice'
+    if 'silver iodate' in agent:
+        return 'silver iodide'
+    
+    if 'silver iodide' in agent and 'ammonium iodide' in agent:
+        return 'silver iodide, ammonium iodide'
+    if 'ammonium iodide' in agent:
+        return 'ammonium iodide'
+
+
+    return agent.strip()
+
 def rgb_string_to_tuple(rgb_str):
     rgb_values = rgb_str.strip('rgb()').split(',')
     return tuple(int(v)/255 for v in rgb_values)
@@ -107,7 +148,7 @@ fig = px.choropleth(
     hover_name='state',
     hover_data=['count']
 )
-fig.update_layout(title_text='Cloud Seeding Activities by U.S. State (2000-2005)', geo_scope='usa')
+fig.update_layout(geo_scope='usa')
 fig.show()
 
 # 2) Stacked Bars - Number of Weather Modification Activities Per Year
@@ -115,18 +156,23 @@ top_states = clean_df['state'].value_counts().head(9).index
 year_state_counts = clean_df[clean_df['state'].isin(top_states)]
 grouped = year_state_counts.groupby(['year', 'state']).size().unstack(fill_value=0)
 grouped = grouped.sort_index()
-blues = px.colors.sequential.Blues
-n_states = len(top_states)
-plotly_blues_reversed = blues[-n_states:][::-1]
-colors = [rgb_string_to_tuple(c) for c in plotly_blues_reversed]
+
+# Generate 9 reversed custom blue shades (skip lightest, start at 0.3)
+samplepoints = [i / 8 * 0.6 + 0.4 for i in range(9)]  # from 0.4 to 1.0
+custom_blues = pc.sample_colorscale(pc.sequential.Blues, samplepoints)[::-1]  # reverse
+
+colors = [rgb_string_to_tuple(c) for c in custom_blues]
+
+# Plot
 plt.figure(figsize=(14, 7))
 bottom = [0] * len(grouped)
 for i, state in enumerate(grouped.columns):
     plt.bar(grouped.index, grouped[state], bottom=bottom, label=state, color=colors[i])
     bottom = [sum(x) for x in zip(bottom, grouped[state])]
-plt.title("Weather Modification Activities Per Year")
-plt.xlabel("Year")
-plt.ylabel("Number of Weather Modification Activities")
+
+# plt.title("Weather Modification Activities Per Year")
+plt.xlabel("Year", fontsize=14)
+plt.ylabel("Number of Weather Modification Activities", fontsize=14)
 plt.legend(title="State", bbox_to_anchor=(1.05, 1), loc='upper left')
 plt.tight_layout()
 plt.show()
@@ -140,44 +186,48 @@ grouped_df = pd.DataFrame(grouped_counts.items(), columns=["purpose", "count"]).
 top_grouped_df = grouped_df.head(10)
 n = len(top_grouped_df)
 cmap = get_cmap('Blues')
-colors = [cmap(i / (n + 1)) for i in range(1, n + 1)][::-1]
+colors = [cmap(0.4 + 0.6 * (i / (n - 1))) for i in range(n)][::-1]
 plt.figure(figsize=(10, 6))
 sns.barplot(
     y=top_grouped_df["purpose"],
     x=top_grouped_df["count"],
     palette=colors
 )
-plt.title("Grouped Purposes of Cloud Seeding Activities (2000–2025)")
-plt.xlabel("Number of Activities")
-plt.ylabel("Purpose")
+# plt.title("Purpose of Cloud Seeding Activities (2000–2025)")
+plt.xlabel("Number of Activities", fontsize=14)
+plt.ylabel("Purpose", fontsize=14)
 plt.tight_layout()
 plt.show()
-
-
 
 # 4) Heatmap - Breakdown of agent and apparatus
 df['apparatus'] = df['apparatus'].str.strip().str.lower()
 df['agent'] = df['agent'].str.strip().str.lower()
+df['agent_group'] = df['agent'].apply(normalize_agent)
+df = df[df['agent_group'].notna()]
 df = df[df['agent'].str.len() <= 50]
-agg = df.groupby("agent").agg({
-    "apparatus": lambda x: ', '.join(sorted(set(x))),
-    "agent": "count"
-}).rename(columns={"agent": "count"}).reset_index()
-pivot = df.groupby(["agent", "apparatus"]).size().unstack(fill_value=0)
-plotly_colors = px.colors.sequential.Blues[1:]
+print(df['agent_group'].value_counts())
+agg = df.groupby(['agent_group', 'apparatus']).size().reset_index(name='count')
+pivot_table = agg.pivot(index='agent_group', columns='apparatus', values='count').fillna(0)
+plotly_colors = px.colors.sequential.Blues[2:]
 converted_colors = [rgb_string_to_tuple(c) for c in plotly_colors]
 custom_blues = LinearSegmentedColormap.from_list("custom_blues", converted_colors)
 plt.figure(figsize=(12, 8))
 sns.heatmap(
-    pivot, 
-    annot=True, 
-    fmt=".0f", 
-    cmap=custom_blues, 
-    cbar_kws={'label': 'Number of Activities'}
-    )
-plt.title("Cloud Seeding Activities by Agent and Apparatus (2000–2025)")
-plt.xlabel("Apparatus")
-plt.ylabel("Agent")
+    pivot_table,
+    annot=True,
+    fmt=".0f",
+    cmap=custom_blues,
+    cbar_kws={'label': 'Number of Activities'},
+    annot_kws={"size": 10},
+    linewidths=0.25,
+    linecolor='gray',
+    xticklabels=True,
+    yticklabels=True
+)
+# plt.title("Cloud Seeding Activities by Agent and Apparatus (2000–2025)", fontsize=16)
+plt.xlabel("Apparatus", fontsize=14, labelpad=12)
+plt.ylabel("Agent Group", fontsize=14, labelpad=12)
+plt.xticks(fontsize=12, rotation=30, ha='right')
+plt.yticks(fontsize=12)
 plt.tight_layout()
 plt.show()
-plt.close()
